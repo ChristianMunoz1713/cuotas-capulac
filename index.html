@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cuotas Fraccionamiento</title>
+  <meta name="description" content="Registro de cuotas de mantenimiento y gastos del fraccionamiento">
+  <meta name="theme-color" content="#1f4e79">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" width="32" height="32">
+      <div>
+        <div id="tituloFracc" class="brand-name">Fraccionamiento</div>
+        <div class="brand-sub">Cuotas de mantenimiento</div>
+      </div>
+    </div>
+    <div class="top-right"><span id="estadoSync" class="sync-pill"></span><button id="btnInstalar" class="btn btn-light btn-sm" hidden>Instalar app</button></div>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <nav class="bottomnav" id="nav">
+    <button data-tab="inicio" class="active"><span class="ico">⌂</span>Inicio</button>
+    <button data-tab="casas"><span class="ico">▦</span>Casas</button>
+    <button data-tab="gastos"><span class="ico">⇣</span>Gastos</button>
+    <button data-tab="reporte"><span class="ico">▤</span>Reporte</button>
+    <button data-tab="ajustes" id="navAjustes"><span class="ico">⚙</span><span>Ajustes</span></button>
+  </nav>
+
+  <dialog id="modal"><div id="modalBody"></div></dialog>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="config.js"></script>
+  <script src="xlsx-lite.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
