@@ -16,7 +16,7 @@
 
 const ESQUEMA = {
   Config: ['clave', 'valor'],
-  Casas: ['id', 'num', 'propietario', 'telefono', 'notas', 'correo'],
+  Casas: ['id', 'num', 'propietario', 'telefono', 'notas', 'correo', 'desocupada'],
   Pagos: ['id', 'casaId', 'casa', 'periodo', 'monto', 'fecha', 'metodo', 'nota', 'ts'],
   Gastos: ['id', 'concepto', 'categoria', 'monto', 'fecha', 'nota', 'ts'],
   Adeudos: ['id', 'casaId', 'casa', 'periodo'],
@@ -69,7 +69,7 @@ function datos(admin) {
   let casas = leer('Casas');
   let pagos = leer('Pagos').map(p => { delete p.casa; return p; });
   if (!admin) {
-    casas = casas.map(c => ({ id: c.id, num: c.num, propietario: '', telefono: '', notas: '', correo: '' }));
+    casas = casas.map(c => ({ id: c.id, num: c.num, propietario: '', telefono: '', notas: '', correo: '', desocupada: c.desocupada }));
     pagos = pagos.map(p => ({ id: p.id, casaId: p.casaId, periodo: p.periodo, monto: p.monto, fecha: p.fecha, ts: p.ts, metodo: '', nota: '' }));
   }
   const adeudos = {};

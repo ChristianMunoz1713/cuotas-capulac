@@ -78,7 +78,7 @@ function normalizar(d) {
   cfg.cuota = num(cfg.cuota); cfg.saldoInicial = num(cfg.saldoInicial);
   return {
     config: cfg,
-    casas: (d.casas || []).map(c => ({ id: String(c.id), num: String(c.num), propietario: c.propietario || '', telefono: String(c.telefono || ''), correo: c.correo || '', notas: c.notas || '' })),
+    casas: (d.casas || []).map(c => ({ id: String(c.id), num: String(c.num), propietario: c.propietario || '', telefono: String(c.telefono || ''), correo: c.correo || '', notas: c.notas || '', desocupada: c.desocupada || '' })),
     pagos: (d.pagos || []).map(p => ({ ...p, monto: num(p.monto), ts: +p.ts || 0, metodo: p.metodo || '', nota: p.nota || '' })),
     gastos: (d.gastos || []).map(g => ({ ...g, monto: num(g.monto), ts: +g.ts || 0, categoria: g.categoria || '', nota: g.nota || '' })),
     adeudos: d.adeudos || {},
@@ -210,15 +210,25 @@ function setEstado(est, err) {
 /* ---------- cálculos ---------- */
 const pagosDe = (casaId, per) => idx.pagos[casaId + '|' + per] || [];
 const pagadoDe = (casaId, per) => pagosDe(casaId, per).reduce((s, p) => s + p.monto, 0);
+/* Ocupación: casa.desocupada guarda los rangos en que la casa estuvo deshabitada,
+   ej. "2026-03:2026-06,2026-10:" (el último sin fin = sigue deshabitada). */
+function rangosDesocupada(c) {
+  return (c?.desocupada || '').split(',').filter(Boolean).map(r => { const [desde, hasta] = r.split(':'); return { desde, hasta: hasta || '' }; });
+}
+const deshabitadaDesde = c => (rangosDesocupada(c).find(r => !r.hasta) || {}).desde || '';
+const deshabitadaEn = (c, per) => rangosDesocupada(c).some(r => per >= r.desde && (!r.hasta || per <= r.hasta));
+const unirRangos = rs => rs.map(r => `${r.desde}:${r.hasta}`).join(',');
+
 function estado(casaId, per) {
   const s = pagadoDe(casaId, per);
   if (s > 0 && s >= db.config.cuota) return 'pagado';
+  if (deshabitadaEn(idx.casa[casaId], per)) return 'deshabitada';
   if (s > 0) return 'parcial';
   if (db.adeudos[casaId + '|' + per]) return 'adeudo';
   return 'pendiente';
 }
-const ESTADO_TXT = { pagado: 'Pagado', parcial: 'Parcial', adeudo: 'Adeudo', pendiente: 'Sin registro' };
-const ESTADO_ICO = { pagado: '✓', parcial: '½', adeudo: '✕', pendiente: '·' };
+const ESTADO_TXT = { pagado: 'Pagado', parcial: 'Parcial', adeudo: 'Adeudo', pendiente: 'Sin registro', deshabitada: 'Deshabitada' };
+const ESTADO_ICO = { pagado: '✓', parcial: '½', adeudo: '✕', pendiente: '·', deshabitada: '–' };
 
 function moverPeriodo(per, d) {
   let [y, m] = per.split('-').map(Number);
@@ -346,6 +356,7 @@ function tarjetaCobro(editor) {
   const pc = periodoACobrar(hoyIso), v = ventanaCobro(pc);
   const abierto = hoyIso >= v.desde && hoyIso <= v.hasta;
   const pagadas = db.casas.filter(c => estado(c.id, pc) === 'pagado').length;
+  const cobrables = db.casas.filter(c => estado(c.id, pc) !== 'deshabitada').length;
   const venc = ultimoVencido(hoyIso);
   const sinPago = db.casas.filter(c => estado(c.id, venc) === 'pendiente').length;
   const vv = ventanaCobro(venc);
@@ -353,7 +364,7 @@ function tarjetaCobro(editor) {
     <div class="card-head"><h2>${abierto ? '🟢 Periodo de cobro abierto' : 'Próximo cobro'}</h2>
       <span class="badge ${abierto ? 'st-pagado' : 'st-pendiente'}">Cuota de ${MESES[+pc.slice(5) - 1]}</span></div>
     <p class="cobro-fechas">${abierto ? 'Se paga' : 'Se pagará'} <b>${txtVentana(pc)}</b> · ${money(db.config.cuota)} por casa</p>
-    <p class="muted small">${pagadas} de ${db.casas.length} casas ya pagaron la cuota de ${MESES[+pc.slice(5) - 1]}.</p>
+    <p class="muted small">${pagadas} de ${cobrables} casas habitadas ya pagaron la cuota de ${MESES[+pc.slice(5) - 1]}${cobrables < db.casas.length ? ` (${db.casas.length - cobrables} deshabitada(s) no se cobran)` : ''}.</p>
     ${editor && sinPago ? `<div class="aviso">
       <span>La cuota de <b>${MESES[+venc.slice(5) - 1]}</b> venció el ${fechaTxt(vv.hasta)}: <b>${sinPago}</b> casa(s) sin pago ni adeudo.</span>
       <button class="btn btn-sm btn-danger-soft" data-action="marcarAdeudosMes" data-per="${venc}">Marcar adeudo</button>
@@ -368,12 +379,13 @@ function vInicio() {
   const [py, pm] = per.split('-');
   const ingMes = db.pagos.filter(p => p.fecha.startsWith(per)).reduce((s, p) => s + p.monto, 0);
   const gasMes = db.gastos.filter(g => g.fecha.startsWith(per)).reduce((s, g) => s + g.monto, 0);
-  const cuentas = { pagado: 0, parcial: 0, adeudo: 0, pendiente: 0 };
+  const cuentas = { pagado: 0, parcial: 0, adeudo: 0, pendiente: 0, deshabitada: 0 };
   for (const c of db.casas) cuentas[estado(c.id, per)]++;
   const deudaTotal = db.casas.reduce((s, c) => s + deudaCasa(c.id).monto, 0);
   const s = saldo();
   const ult = movimientos().slice(-8).reverse();
-  const pct = db.casas.length ? Math.round(cuentas.pagado / db.casas.length * 100) : 0;
+  const habitadas = db.casas.length - cuentas.deshabitada;
+  const pct = habitadas ? Math.round(cuentas.pagado / habitadas * 100) : 0;
   return `
   <section class="hero ${s < 0 ? 'neg' : ''}">
     <div class="hero-lbl">Saldo disponible</div>
@@ -394,7 +406,7 @@ function vInicio() {
       <input type="month" value="${per}" data-change="mesInicio" aria-label="Mes">
     </div>
     <div class="progress"><div style="width:${pct}%"></div></div>
-    <p class="muted small">${cuentas.pagado} de ${db.casas.length} casas al corriente en ${MESES[+pm - 1]} ${py} (${pct}%)</p>
+    <p class="muted small">${cuentas.pagado} de ${habitadas} casas habitadas al corriente en ${MESES[+pm - 1]} ${py} (${pct}%)${cuentas.deshabitada ? ` · ${cuentas.deshabitada} deshabitada(s)` : ''}</p>
     <div class="stats">
       <div class="stat ok"><b>${cuentas.pagado}</b><span>Pagadas</span></div>
       <div class="stat warn"><b>${cuentas.parcial}</b><span>Parciales</span></div>
@@ -436,9 +448,9 @@ function vCasas() {
   const coincide = c => !q || c.num.toLowerCase().includes(q) ||
     (editor && (c.propietario.toLowerCase().replace(/\s+/g, '').includes(q) || c.telefono.replace(/\s+/g, '').includes(q)));
   // agrupa cada casa según su estado en el mes elegido
-  const grupo = c => { const e = estado(c.id, per); return e === 'pagado' ? 'corriente' : e === 'pendiente' ? 'pendiente' : 'deuda'; };
+  const grupo = c => { const e = estado(c.id, per); return e === 'pagado' ? 'corriente' : e === 'pendiente' || e === 'deshabitada' ? e : 'deuda'; };
   const buscadas = db.casas.filter(coincide);
-  const cuenta = { todas: buscadas.length, corriente: 0, deuda: 0, pendiente: 0 };
+  const cuenta = { todas: buscadas.length, corriente: 0, deuda: 0, pendiente: 0, deshabitada: 0 };
   buscadas.forEach(c => cuenta[grupo(c)]++);
   const casas = ui.filtro === 'todas' ? buscadas : buscadas.filter(c => grupo(c) === ui.filtro);
   const chip = (k, t) => `<button class="chip chip-${k} ${ui.filtro === k ? 'on' : ''}" data-action="filtro" data-f="${k}">${t} <b>${cuenta[k]}</b></button>`;
@@ -453,7 +465,7 @@ function vCasas() {
     <input type="month" value="${per}" data-change="mesCasas" aria-label="Mes a revisar">
     <button class="icon-btn" data-action="mesCasas" data-d="1" aria-label="Mes siguiente">›</button>
   </div>
-  <div class="chips">${chip('todas', 'Todas')}${chip('corriente', 'Al corriente')}${chip('deuda', 'Con adeudo')}${chip('pendiente', 'Sin registro')}</div>
+  <div class="chips">${chip('todas', 'Todas')}${chip('corriente', 'Al corriente')}${chip('deuda', 'Con adeudo')}${chip('pendiente', 'Sin registro')}${chip('deshabitada', 'Deshabitadas')}</div>
   <div class="casas-bar">
     <p class="muted small">${casas.length} casa(s) · ${periodoTxt(per)}${sinProp ? ` · ${sinProp} sin propietario registrado` : ''}</p>
     ${editor ? '<button class="chip add" data-action="nuevaCasa">+ Casa</button>' : ''}
@@ -467,6 +479,7 @@ function vCasas() {
           ${editor ? `<span class="casa-prop">${esc(c.propietario) || '<i>Sin propietario</i>'}</span>` : ''}
           <span class="casa-st">${ESTADO_TXT[e]}${e === 'parcial' ? ' · ' + money(s) : ''}</span>
           ${d.meses ? `<span class="casa-deuda">Adeudo total: ${d.meses} mes(es) · ${money(d.monto)}</span>` : ''}
+          ${e !== 'deshabitada' && deshabitadaDesde(c) ? `<span class="casa-desh">Deshabitada desde ${periodoCorto(deshabitadaDesde(c))}</span>` : ''}
         </button>
         ${editor ? `<button class="casa-edit" data-action="editarCasa" data-id="${c.id}">${c.propietario ? '✎ Datos del propietario' : '+ Registrar propietario'}</button>` : ''}
       </div>`;
@@ -494,8 +507,15 @@ function vCasa() {
   <section class="card casa-head">
     <div>
       <div class="casa-big">Casa ${esc(c.num)}</div>
+      ${deshabitadaDesde(c)
+        ? `<span class="badge st-deshabitada">Deshabitada desde ${periodoTxt(deshabitadaDesde(c))}</span>`
+        : '<span class="badge st-pagado">Habitada</span>'}
     </div>
+    ${editor ? (deshabitadaDesde(c)
+      ? `<button class="btn btn-sm btn-primary" data-action="ocupacion" data-id="${c.id}">Marcar como habitada</button>`
+      : `<button class="btn btn-sm btn-ghost" data-action="ocupacion" data-id="${c.id}">Marcar como deshabitada</button>`) : ''}
   </section>
+  ${deshabitadaDesde(c) ? `<p class="muted small nota-desh">Mientras esté deshabitada, sus meses no se marcan con adeudo ni cuentan como pendientes.</p>` : ''}
   ${editor ? `<section class="card">
     <div class="card-head"><h2>Propietario</h2>
       <button class="btn btn-sm ${c.propietario ? 'btn-ghost' : 'btn-primary'}" data-action="editarCasa" data-id="${c.id}">${c.propietario ? 'Editar' : '+ Registrar'}</button></div>
@@ -585,7 +605,7 @@ function vReporte() {
   </section>
   <section class="card">
     <h2>Cumplimiento por casa ${ui.anio}</h2>
-    <p class="muted small leyenda"><span class="lg st-pagado">✓ Pagado</span><span class="lg st-parcial">½ Parcial</span><span class="lg st-adeudo">✕ Adeudo</span><span class="lg st-pendiente">· Sin registro</span></p>
+    <p class="muted small leyenda"><span class="lg st-pagado">✓ Pagado</span><span class="lg st-parcial">½ Parcial</span><span class="lg st-adeudo">✕ Adeudo</span><span class="lg st-pendiente">· Sin registro</span><span class="lg st-deshabitada">– Deshabitada</span></p>
     <div class="table-wrap"><table class="tbl matrix">
       <thead><tr><th class="sticky">Casa</th>${MES_C.map(m => `<th>${m}</th>`).join('')}</tr></thead>
       <tbody>${db.casas.map(c => `<tr><th class="sticky" title="${esc(c.propietario)}">${esc(c.num)}</th>${pers.map(p => {
@@ -822,9 +842,56 @@ function modalCasa(id) {
     const f = e.target;
     const numero = f.num.value.trim().toUpperCase().replace(/\s+/g, '');
     if (db.casas.some(x => x.num === numero && x.id !== c?.id)) return toast(`La casa ${numero} ya existe`);
-    const casa = { id: c?.id || uid(), num: numero, propietario: f.propietario.value.trim(), telefono: f.telefono.value.trim(), correo: f.correo.value.trim(), notas: f.notas.value.trim() };
+    const casa = { desocupada: '', ...c, id: c?.id || uid(), num: numero, propietario: f.propietario.value.trim(), telefono: f.telefono.value.trim(), correo: f.correo.value.trim(), notas: f.notas.value.trim() };
     if (!ejecutar([{ tipo: 'casa.guardar', casa }])) return;
     cerrarModal(); render(); toast('Casa guardada');
+  });
+}
+
+function modalOcupacion(casaId) {
+  const c = idx.casa[casaId];
+  const desde = deshabitadaDesde(c);
+  const pc = periodoACobrar();
+  abrirModal(`
+  <form id="formOcupacion" class="form">
+    <h3>Casa ${esc(c.num)} · ${desde ? 'marcar como habitada' : 'marcar como deshabitada'}</h3>
+    ${desde
+      ? `<p class="muted small">Está deshabitada desde ${periodoTxt(desde)}. A partir del mes que elijas se vuelve a cobrar la cuota y podrá marcarse con adeudo.</p>
+         <label>Habitada a partir de<input name="mes" type="month" value="${pc < desde ? desde : pc}" min="${desde}" required></label>`
+      : `<p class="muted small">Desde el mes que elijas, la casa no se cobrará ni se marcará con adeudo hasta que la vuelvas a marcar como habitada. Los adeudos anteriores a ese mes se conservan.</p>
+         <label>Deshabitada a partir de<input name="mes" type="month" value="${pc}" required></label>`}
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-action="cerrar">Cancelar</button>
+      <button class="btn btn-primary">${desde ? 'Marcar como habitada' : 'Marcar como deshabitada'}</button>
+    </div>
+  </form>`);
+  $('#formOcupacion').addEventListener('submit', e => {
+    e.preventDefault();
+    const mes = e.target.mes.value;
+    if (!mes) return;
+    let rs = rangosDesocupada(c);
+    const ops = [];
+    if (desde) {
+      if (mes < desde) return toast(`El mes no puede ser anterior a ${periodoTxt(desde)}`);
+      const abierto = rs.find(r => !r.hasta);
+      if (mes === desde) rs = rs.filter(r => r !== abierto); // nunca estuvo deshabitada
+      else abierto.hasta = moverPeriodo(mes, -1);
+    } else {
+      const ult = rs[rs.length - 1];
+      if (ult && mes <= moverPeriodo(ult.hasta, 1)) { // une con el rango anterior si se encima o es contiguo
+        ult.hasta = '';
+        if (mes < ult.desde) ult.desde = mes;
+      } else rs.push({ desde: mes, hasta: '' });
+      // quita adeudos marcados a partir de ese mes
+      for (const k of Object.keys(db.adeudos)) {
+        const [cid, p] = k.split('|');
+        if (cid === c.id && p >= mes) ops.push({ tipo: 'adeudo.quitar', casaId: cid, periodo: p });
+      }
+    }
+    ops.unshift({ tipo: 'casa.guardar', casa: { ...c, desocupada: unirRangos(rs) } });
+    if (!ejecutar(ops)) return;
+    cerrarModal(); render();
+    toast(desde ? `Casa ${c.num} habitada desde ${periodoTxt(mes)}` : `Casa ${c.num} deshabitada desde ${periodoTxt(mes)}`);
   });
 }
 
@@ -839,11 +906,12 @@ function modalMes(casaId, per) {
   <div class="form">
     <h3>Casa ${esc(c.num)} · ${periodoTxt(per)}</h3>
     <p><span class="badge st-${e}">${ESTADO_TXT[e]}</span> ${e === 'parcial' ? `Falta ${money(db.config.cuota - pagadoDe(casaId, per))}` : ''}</p>
+    ${e === 'deshabitada' ? '<p class="muted small">La casa estaba deshabitada este mes: no se cobra ni se marca con adeudo.</p>' : ''}
     ${pagos.length ? `<ul class="list">${pagos.map(p => `<li class="mov"><div class="grow">${money(p.monto)} <span class="muted small">· ${fechaTxt(p.fecha)}${p.metodo ? ' · ' + esc(p.metodo) : ''}</span></div>
       ${editor ? `<button class="icon-btn" data-action="borrarPago" data-id="${p.id}" aria-label="Eliminar pago">🗑</button>` : ''}</li>`).join('')}</ul>` : ''}
     <div class="stack">
       ${editor && e !== 'pagado' ? `<button class="btn btn-primary" data-action="pagoMes" data-id="${casaId}" data-per="${per}">Registrar pago</button>` : ''}
-      ${editor && !pagos.length && !marcado ? `<button class="btn btn-danger-soft" data-action="toggleAdeudo" data-id="${casaId}" data-per="${per}">Marcar como adeudo</button>` : ''}
+      ${editor && !pagos.length && !marcado && e !== 'deshabitada' ? `<button class="btn btn-danger-soft" data-action="toggleAdeudo" data-id="${casaId}" data-per="${per}">Marcar como adeudo</button>` : ''}
       ${editor && marcado && !pagos.length ? `<button class="btn btn-ghost" data-action="toggleAdeudo" data-id="${casaId}" data-per="${per}">Quitar adeudo</button>` : ''}
       ${ui.tab !== 'casa' ? `<button class="btn btn-ghost" data-action="abrirCasa" data-id="${casaId}">Ver casa</button>` : ''}
       <button class="btn btn-ghost" data-action="cerrar">Cerrar</button>
@@ -912,7 +980,7 @@ function exportarExcel() {
   const anios = new Set([new Date().getFullYear()]);
   db.pagos.forEach(p => anios.add(+p.periodo.slice(0, 4)));
   Object.keys(db.adeudos).forEach(k => anios.add(+k.split('|')[1].slice(0, 4)));
-  const estSty = { pagado: S.ok, parcial: S.warn, adeudo: S.bad, pendiente: 0 };
+  const estSty = { pagado: S.ok, parcial: S.warn, adeudo: S.bad, pendiente: 0, deshabitada: 0 };
   const hojasEstado = [...anios].sort().map(y => ({
     name: `Estado ${y}`, freezeRow: 1, cols: [8, 26, ...MES_C.map(() => 11), 13, 13],
     rows: [
@@ -924,7 +992,7 @@ function exportarExcel() {
           tot += s;
           if (e === 'adeudo') deu += db.config.cuota;
           if (e === 'parcial') deu += db.config.cuota - s;
-          const txt = e === 'pagado' ? 'Pagado' : e === 'parcial' ? `Parcial $${s}` : e === 'adeudo' ? 'Adeudo' : '';
+          const txt = e === 'pagado' ? 'Pagado' : e === 'parcial' ? `Parcial $${s}` : e === 'adeudo' ? 'Adeudo' : e === 'deshabitada' ? 'Deshabitada' : '';
           return { v: txt, s: estSty[e] };
         });
         return [c.num, c.propietario, ...cells, M(tot), M(deu)];
@@ -953,9 +1021,12 @@ function exportarExcel() {
   };
 
   const hojaCasas = {
-    name: 'Propietarios', freezeRow: 1, cols: [8, 30, 16, 30, 36, 15, 14],
-    rows: [['Casa', 'Propietario', 'Teléfono', 'Correo', 'Notas', 'Meses adeudo', 'Adeudo'].map(H),
-      ...db.casas.map(c => { const d = deudaCasa(c.id); return [c.num, c.propietario, c.telefono, c.correo, c.notas, d.meses, M(d.monto)]; })],
+    name: 'Propietarios', freezeRow: 1, cols: [8, 30, 16, 30, 36, 24, 15, 14],
+    rows: [['Casa', 'Propietario', 'Teléfono', 'Correo', 'Notas', 'Ocupación', 'Meses adeudo', 'Adeudo'].map(H),
+      ...db.casas.map(c => {
+        const d = deudaCasa(c.id), desde = deshabitadaDesde(c);
+        return [c.num, c.propietario, c.telefono, c.correo, c.notas, desde ? `Deshabitada desde ${periodoTxt(desde)}` : 'Habitada', d.meses, M(d.monto)];
+      })],
   };
 
   const nombre = `Cuotas_${db.config.nombre.replace(/[^\wáéíóúñÁÉÍÓÚÑ]+/g, '_')}_${hoy()}.xlsx`;
@@ -997,6 +1068,7 @@ const acciones = {
   editarGasto: el => modalGasto(el.dataset.id),
   nuevaCasa: () => modalCasa(),
   editarCasa: el => modalCasa(el.dataset.id),
+  ocupacion: el => modalOcupacion(el.dataset.id),
   cerrar: cerrarModal,
   abrirCasa: el => { cerrarModal(); ui.casaId = el.dataset.id; ir('casa'); },
   volver: () => ir('casas'),

@@ -2,14 +2,14 @@
   --bg: #f3f5f8; --card: #ffffff; --text: #1b2430; --muted: #6b7684; --line: #e3e7ed;
   --primary: #1f4e79; --primary-2: #2d6aa3; --on-primary: #fff;
   --ok: #1e8e4e; --ok-bg: #dff3e6; --warn: #a86b00; --warn-bg: #fff1cc; --bad: #c0352b; --bad-bg: #fde2df;
-  --pend-bg: #eef0f3; --radius: 14px; --shadow: 0 1px 3px rgba(16,24,40,.08);
+  --pend-bg: #eef0f3; --desh: #5b5fc7; --desh-bg: #e8e9fb; --radius: 14px; --shadow: 0 1px 3px rgba(16,24,40,.08);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f141a; --card: #18202a; --text: #e6ebf1; --muted: #93a0ae; --line: #27313d;
     --primary: #3f87c9; --primary-2: #5a9ad6;
     --ok: #4cc884; --ok-bg: #173826; --warn: #f0b84a; --warn-bg: #3a2e12; --bad: #ff7a6e; --bad-bg: #3d1c1a;
-    --pend-bg: #222b36; --shadow: none;
+    --pend-bg: #222b36; --desh: #a5a8ff; --desh-bg: #2a2c4a; --shadow: none;
   }
 }
 * { box-sizing: border-box; }
@@ -153,6 +153,13 @@ a { color: var(--primary-2); }
 .chip-pendiente.on { background: var(--muted); border-color: var(--muted); }
 .casas-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .casas-bar p { margin: 0; }
+.st-deshabitada { background: var(--desh-bg); color: var(--desh); }
+.casa.st-deshabitada { border-left-color: var(--desh); background: var(--card); color: var(--text); }
+.casa.st-deshabitada .casa-st { background: var(--desh-bg); color: var(--desh); }
+.casa-desh { font-size: 11.5px; color: var(--desh); font-weight: 600; }
+.chip-deshabitada.on { background: var(--desh); border-color: var(--desh); }
+.casa-head .badge { margin-top: 4px; }
+.nota-desh { margin: -6px 4px 0; }
 .cobro { border-left: 5px solid var(--line); }
 .cobro.abierto { border-left-color: var(--ok); }
 .cobro-fechas { margin: 0; font-size: 16px; }
