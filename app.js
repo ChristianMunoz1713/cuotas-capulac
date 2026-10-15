@@ -178,7 +178,7 @@ async function api(url, body) {
     : await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now());
   let j;
   try { j = await r.json(); } catch { throw new Error('Respuesta inválida del servidor. Revisa la URL del script.'); }
-  if (!j.ok) { const e = new Error(j.error || 'Error del servidor'); e.auth = !!j.auth; e.server = true; throw e; }
+  if (!j.ok) { const e = new Error(j.error || 'Error del servidor'); e.auth = !!j.auth; e.necesitaCodigo = !!j.necesitaCodigo; e.server = true; throw e; }
   return j;
 }
 
@@ -1116,13 +1116,13 @@ function olvidarSesion() {
   ls.del(CFG_TOKEN); ls.del(CFG_USER); ls.set(CFG_COLA, '[]');
 }
 
-async function iniciarSesion(url, usuario, clave) {
+async function iniciarSesion(url, usuario, clave, codigo) {
   url = String(url || '').trim();
   if (!URL_SCRIPT_OK.test(url)) { toast('La URL debe ser la de tu script de Google (script.google.com/…/exec)'); return false; }
   const btn = document.querySelector('#modal form button.btn-primary, #formConexion button.btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
   try {
-    let res = await api(url, { accion: 'login', usuario, clave });
+    let res = await api(url, { accion: 'login', usuario, clave, codigo });
     const token = res.token;
     if (!res.data.casas.length) {
       const local = modo() === 'local' ? db : normalizar(JSON.parse(ls.get(KEY) || 'null') || dbInicial());
@@ -1137,10 +1137,30 @@ async function iniciarSesion(url, usuario, clave) {
     toast(`Bienvenido, ${remoto.usuario}. Tienes control total de la aplicación.`);
     return true;
   } catch (e) {
-    toast(e.server ? e.message : 'No se pudo conectar. Revisa tu internet.');
     if (btn) { btn.disabled = false; btn.textContent = 'Iniciar sesión'; }
+    if (e.necesitaCodigo) { modalCodigo(url, usuario, clave, codigo ? e.message : ''); return false; }
+    toast(e.server ? e.message : 'No se pudo conectar. Revisa tu internet.');
     return false;
   }
+}
+
+// Primera vez con Google Sheets: registra al administrador con el código que aparece en la hoja
+function modalCodigo(url, usuario, clave, error) {
+  abrirModal(`
+  <form id="formCodigo" class="form">
+    <h3>Activar administrador en Google</h3>
+    <p class="muted small">Es la primera vez que el administrador entra con la hoja de Google. Escribe el
+      <b>código de instalación</b> de 6 dígitos que aparece en la pestaña <b>"Instalación"</b> de tu hoja de cálculo.</p>
+    <label>Código de instalación<input name="codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+    ${error ? `<p class="negc small">${esc(error)}</p>` : ''}
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-action="cerrar">Más tarde</button>
+      <button class="btn btn-primary">Activar</button>
+    </div>
+  </form>`);
+  const f = $('#formCodigo');
+  f.codigo.focus();
+  f.addEventListener('submit', ev => { ev.preventDefault(); iniciarSesion(url, usuario, clave, f.codigo.value.trim()); });
 }
 
 function modalLogin() {

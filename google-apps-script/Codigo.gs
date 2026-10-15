@@ -27,13 +27,16 @@ const CONFIG_BASE = { nombre: 'Fraccionamiento', cuota: 100, saldoInicial: 0, di
 
 /* ---------- web app ---------- */
 function doGet() {
-  return responder(() => datos(false));
+  return responder(() => {
+    if (!props().getProperty('ADMIN_USER')) codigoInstalacion();
+    return datos(false);
+  });
 }
 
 function doPost(e) {
   return responder(() => {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    if (body.accion === 'login') return iniciarSesion(body.usuario, body.clave);
+    if (body.accion === 'login') return iniciarSesion(body.usuario, body.clave, body.codigo);
     if (body.accion === 'logout') { cerrarSesion(body.token); return { ok: true }; }
     if (!sesionValida(body.token)) {
       return { ok: false, auth: true, error: 'Tu sesión de administrador expiró. Vuelve a iniciar sesión.' };
@@ -65,16 +68,50 @@ function hashClave(clave, sal) {
   return Utilities.base64Encode(bytes);
 }
 
-function iniciarSesion(usuario, clave) {
+/* Primera vez: aún no hay administrador. El script genera un código de 6 dígitos que solo se ve
+   en la hoja de cálculo (pestaña "Instalación"); quien lo escriba en la app junto con su usuario
+   y contraseña queda registrado como administrador. Así la contraseña nunca se escribe en el código. */
+function codigoInstalacion() {
+  let c = props().getProperty('SETUP_CODE');
+  if (!c) {
+    c = String(100000 + Math.floor(Math.random() * 900000));
+    props().setProperty('SETUP_CODE', c);
+  }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const h = ss.getSheetByName('Instalación') || ss.insertSheet('Instalación', 0);
+  h.getRange(1, 1, 3, 1).setValues([
+    ['Código de instalación del administrador:'],
+    ["'" + c],
+    ['Escríbelo en la app la primera vez que inicies sesión como administrador. Después esta pestaña se borra sola.'],
+  ]);
+  h.getRange(2, 1).setFontSize(28).setFontWeight('bold');
+  return c;
+}
+
+function iniciarSesion(usuario, clave, codigo) {
   usuario = String(usuario || '').trim().toLowerCase();
   clave = String(clave || '');
   const p = props();
-  const real = p.getProperty('ADMIN_USER');
-  if (!real) return { ok: false, error: 'Aún no hay administrador. En la hoja usa Cuotas → Establecer usuario y contraseña.' };
   // bloqueo temporal tras varios intentos fallidos
   const cache = CacheService.getScriptCache();
   const fallos = Number(cache.get('fallos') || 0);
   if (fallos >= 5) return { ok: false, error: 'Demasiados intentos fallidos. Espera 15 minutos.' };
+  if (!p.getProperty('ADMIN_USER')) {
+    const real = codigoInstalacion();
+    if (!codigo) return { ok: false, necesitaCodigo: true, error: 'Primera vez: escribe el código de instalación de tu hoja de Google.' };
+    if (String(codigo).trim() !== real) {
+      cache.put('fallos', String(fallos + 1), 900);
+      Utilities.sleep(1200);
+      return { ok: false, necesitaCodigo: true, error: 'Código de instalación incorrecto' };
+    }
+    if (usuario.length < 3 || clave.length < 8) return { ok: false, error: 'El usuario debe tener 3 caracteres y la contraseña 8 como mínimo.' };
+    const sal = Utilities.getUuid();
+    p.setProperties({ ADMIN_USER: usuario, ADMIN_SAL: sal, ADMIN_HASH: hashClave(clave, sal), SESIONES: '{}' });
+    p.deleteProperty('SETUP_CODE');
+    const hi = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Instalación');
+    if (hi) SpreadsheetApp.getActiveSpreadsheet().deleteSheet(hi);
+  }
+  const real = p.getProperty('ADMIN_USER');
   if (usuario !== real || hashClave(clave, p.getProperty('ADMIN_SAL')) !== p.getProperty('ADMIN_HASH')) {
     cache.put('fallos', String(fallos + 1), 900);
     Utilities.sleep(1200);
