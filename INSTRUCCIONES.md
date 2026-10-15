@@ -1,10 +1,19 @@
 # Cuotas Capulac: puesta en marcha
 
-La app tiene dos tipos de usuario:
+## Usuarios de la app
 
-| | Administrador | Invitado (vecinos) |
+Al abrir la app se pide usuario y contraseña. Hay dos usuarios: el **administrador** (`ygarcia`) y el **visitante** (`visitante`).
+Las contraseñas están guardadas en `app.js` (constante `USUARIOS`) como hash PBKDF2-SHA256 de 150 000 iteraciones, nunca en texto plano.
+Para cambiar una contraseña hay que generar un hash nuevo y volver a publicar la app.
+
+> Sin la hoja de Google (secciones siguientes), cada teléfono guarda sus propios datos.
+> Los vecinos solo verán la información del administrador cuando la app esté conectada a Google Sheets.
+
+## Opcional: compartir los datos con Google Sheets
+
+| | Administrador | Visitante (vecinos) |
 |---|---|---|
-| Acceso | Usuario y contraseña | Solo abrir el enlace, sin usuario |
+| Acceso | Usuario y contraseña | Usuario de visitante |
 | Registrar pagos, gastos, adeudos y propietarios | ✓ | ✗ |
 | Modificar y eliminar | ✓ | ✗ |
 | Ver saldo, gastos y estado de cada casa | ✓ | ✓ |

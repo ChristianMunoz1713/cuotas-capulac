@@ -59,7 +59,33 @@ const remoto = {
   estado: 'idle', error: '', ultima: null,
 };
 const modo = () => (!remoto.url ? 'local' : remoto.token ? 'admin' : 'invitado');
-const puedeEditar = () => modo() !== 'invitado';
+
+/* ---------- usuarios de la app ----------
+   Las contraseñas se guardan como PBKDF2-SHA256 (150 000 iteraciones con sal), nunca en texto plano.
+   Para cambiarlas hay que generar un hash nuevo (ver INSTRUCCIONES.md). */
+const USUARIOS = [
+  { usuario: 'ygarcia', rol: 'admin', sal: '1AGZIvpMC7/CyoPrxtcW0g==', hash: 'AzEaUMyH1n9ta/V0/0d45kvamIDS526rINyg5+GT4U4=' },
+  { usuario: 'visitante', rol: 'visitante', sal: '5ojarKydmnBIW8g/tp+9eg==', hash: 'k3wFBEYu0lC72cLcz+14c91QBgn6AerCh436gL6i57w=' },
+];
+const CFG_SESION = 'cuotas-sesion';
+let sesion = (() => {
+  try {
+    const s = JSON.parse(ls.get(CFG_SESION));
+    return s && USUARIOS.some(u => u.usuario === s.usuario && u.rol === s.rol) ? s : null;
+  } catch { return null; }
+})();
+
+async function verificarCredenciales(usuario, clave) {
+  const u = USUARIOS.find(x => x.usuario === String(usuario).trim().toLowerCase());
+  const sal = new TextEncoder().encode(u ? u.sal : 'sin-usuario'); // la sal se usa como texto UTF-8
+  const llave = await crypto.subtle.importKey('raw', new TextEncoder().encode(clave), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: sal, iterations: 150000 }, llave, 256);
+  const hash = btoa(String.fromCharCode(...new Uint8Array(bits)));
+  return u && hash === u.hash ? u : null;
+}
+
+// Solo el administrador modifica; con Google Sheets además necesita su sesión en el servidor.
+const puedeEditar = () => sesion?.rol === 'admin' && modo() !== 'invitado';
 ls.del('cuotas-admin-key'); // clave de la versión anterior
 
 /* ---------- base de datos ---------- */
@@ -303,8 +329,30 @@ function ir(tab) {
   window.scrollTo(0, 0);
 }
 
+function vLogin() {
+  return `
+  <section class="card login">
+    <img src="icons/icon-192.png" alt="" width="64" height="64">
+    <h2>${esc(db.config.nombre)}</h2>
+    <p class="muted small">Cuotas de mantenimiento · inicia sesión para continuar</p>
+    <form id="formEntrar" class="form flush">
+      <label>Usuario<input name="usuario" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></label>
+      <label>Contraseña<input name="clave" type="password" required autocomplete="current-password"></label>
+      <p id="errorLogin" class="negc small" hidden></p>
+      <button class="btn btn-primary">Entrar</button>
+    </form>
+    <p class="muted small">Vecinos: usen el usuario de visitante que les compartió la administración.</p>
+  </section>`;
+}
+
 function render() {
   $('#tituloFracc').textContent = db.config.nombre;
+  document.body.classList.toggle('sin-sesion', !sesion);
+  if (!sesion) {
+    if (!$('#formEntrar')) $('#view').innerHTML = vLogin();
+    pintarSesion();
+    return;
+  }
   document.querySelectorAll('#nav button').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === ui.tab || (ui.tab === 'casa' && b.dataset.tab === 'casas')));
   $('#navAjustes').lastChild.textContent = puedeEditar() ? 'Ajustes' : 'Más';
@@ -670,18 +718,28 @@ function ejemploCobro(di, dl) {
 
 function vAjustes() {
   const m = modo();
-  if (m === 'invitado') {
+  if (sesion.rol === 'admin' && m === 'invitado') {
+    // administrador en un dispositivo conectado a Google pero sin sesión en el servidor
     return `
     <section class="card">
-      <h2>Modo invitado</h2>
+      <h2>Sesión en Google Sheets</h2>
+      <p class="muted small">Para registrar cambios en la hoja de Google, vuelve a confirmar tu contraseña.</p>
+      <button class="btn btn-primary full" data-action="login">Confirmar contraseña</button>
+      <button class="btn btn-ghost full" data-action="cerrarSesion">Cerrar sesión</button>
+    </section>`;
+  }
+  if (!puedeEditar()) {
+    return `
+    <section class="card">
+      <h2>Modo visitante</h2>
       <p class="muted small">Puedes ver el saldo del fraccionamiento, los gastos y el estado de cada casa. Solo el administrador puede registrar, modificar o eliminar información.</p>
-      <button class="btn btn-ghost full" data-action="sincronizar">Actualizar datos</button>
+      ${remoto.url ? '<button class="btn btn-ghost full" data-action="sincronizar">Actualizar datos</button>' : ''}
       ${ls.get(CFG_MICASA) ? '<button class="btn btn-ghost full" data-action="cambiarMiCasa">Cambiar mi casa</button>' : ''}
     </section>
     <section class="card">
-      <h2>Administrador</h2>
-      <p class="muted small">Si eres el administrador, inicia sesión para registrar pagos, gastos y movimientos.</p>
-      <button class="btn btn-primary full" data-action="login">Iniciar sesión</button>
+      <h2>Sesión</h2>
+      <p class="muted small">Entraste como <b>${esc(sesion.usuario)}</b>. Para entrar como administrador, cierra sesión.</p>
+      <button class="btn btn-ghost full" data-action="cerrarSesion">Cerrar sesión</button>
     </section>
     <p class="muted small center">${esc(db.config.nombre)} · ${db.casas.length} casas</p>`;
   }
@@ -1104,10 +1162,31 @@ function modalLogin() {
 function pintarSesion() {
   const b = $('#btnSesion');
   if (!b) return;
-  const m = modo();
-  b.hidden = m === 'local';
-  b.textContent = m === 'admin' ? `👤 ${remoto.usuario || 'Admin'}` : 'Iniciar sesión';
-  b.dataset.action = m === 'admin' ? 'menuSesion' : 'login';
+  b.hidden = !sesion;
+  if (!sesion) return;
+  b.textContent = `${sesion.rol === 'admin' ? '👤' : '👀'} ${sesion.usuario}`;
+  b.dataset.action = 'menuSesion';
+}
+
+async function entrar(f) {
+  const btn = f.querySelector('button.btn-primary'), err = $('#errorLogin');
+  btn.disabled = true; btn.textContent = 'Verificando…'; err.hidden = true;
+  const usuario = f.usuario.value, clave = f.clave.value;
+  let u = null;
+  try { u = await verificarCredenciales(usuario, clave); } catch { /* navegador sin soporte de cifrado */ }
+  if (!u) {
+    btn.disabled = false; btn.textContent = 'Entrar';
+    err.textContent = 'Usuario o contraseña incorrectos'; err.hidden = false;
+    f.clave.value = ''; f.clave.focus();
+    return;
+  }
+  sesion = { usuario: u.usuario, rol: u.rol };
+  ls.set(CFG_SESION, JSON.stringify(sesion));
+  ui.tab = 'inicio';
+  render();
+  toast(u.rol === 'admin' ? `Bienvenido, ${u.usuario}. Tienes control total de la aplicación.` : 'Bienvenido. Modo visitante: solo consulta.');
+  // con Google Sheets, el administrador también inicia sesión en el servidor
+  if (u.rol === 'admin' && remoto.url && !remoto.token) iniciarSesion(remoto.url, usuario, clave);
 }
 
 /* ---------- eventos ---------- */
@@ -1188,10 +1267,12 @@ const acciones = {
   },
   login: () => modalLogin(),
   menuSesion: () => abrirModal(`<div class="form">
-    <h3>Sesión de administrador</h3>
-    <p>Conectado como <b>${esc(remoto.usuario)}</b>. Tienes control total: registrar, modificar y eliminar.</p>
+    <h3>${sesion.rol === 'admin' ? 'Administrador' : 'Visitante'}</h3>
+    <p>Entraste como <b>${esc(sesion.usuario)}</b>. ${sesion.rol === 'admin'
+      ? 'Tienes control total: registrar, modificar y eliminar.'
+      : 'Puedes consultar toda la información, pero no modificar ni eliminar.'}</p>
     <div class="stack">
-      <button class="btn btn-ghost" data-action="irAjustes">Ajustes y enlace para vecinos</button>
+      ${sesion.rol === 'admin' ? '<button class="btn btn-ghost" data-action="irAjustes">Ajustes</button>' : ''}
       <button class="btn btn-danger-soft" data-action="cerrarSesion">Cerrar sesión</button>
       <button class="btn btn-ghost" data-action="cerrar">Volver</button>
     </div></div>`),
@@ -1201,7 +1282,9 @@ const acciones = {
     const token = remoto.token;
     if (token) api(remoto.url, { accion: 'logout', token }).catch(() => {});
     olvidarSesion(); cerrarModal();
-    ir('inicio'); sincronizar(); toast('Sesión cerrada. Ahora estás como invitado.');
+    sesion = null; ls.del(CFG_SESION);
+    ui.tab = 'inicio'; render(); window.scrollTo(0, 0);
+    toast('Sesión cerrada');
   },
   desconectar: () => {
     if (!confirm('Este dispositivo dejará de usar Google Sheets y volverá a sus datos locales. Los datos en Google no se borran. ¿Continuar?')) return;
@@ -1257,6 +1340,7 @@ document.addEventListener('submit', e => {
     if (ejecutar([{ tipo: 'config.guardar', config }])) { render(); toast('Configuración guardada'); }
   }
   if (f.id === 'formConexion') { e.preventDefault(); iniciarSesion(f.url.value, f.usuario.value, f.clave.value); }
+  if (f.id === 'formEntrar') { e.preventDefault(); entrar(f); }
   if (f.id === 'formLogin') { e.preventDefault(); iniciarSesion(remoto.url, f.usuario.value, f.clave.value); }
 });
 

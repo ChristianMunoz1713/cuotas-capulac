@@ -1,5 +1,5 @@
 // Service worker: permite instalar la app y usarla sin internet.
-const CACHE = 'cuotas-capulac-v6';
+const CACHE = 'cuotas-capulac-v7';
 const ARCHIVOS = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'xlsx-lite.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
 
