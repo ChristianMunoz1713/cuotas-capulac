@@ -19,15 +19,17 @@ const ESQUEMA = {
   Config: ['clave', 'valor'],
   Casas: ['id', 'num', 'propietario', 'telefono', 'notas', 'correo', 'desocupada'],
   Pagos: ['id', 'casaId', 'casa', 'periodo', 'monto', 'fecha', 'metodo', 'nota', 'ts'],
-  Gastos: ['id', 'concepto', 'categoria', 'monto', 'fecha', 'nota', 'ts'],
+  Gastos: ['id', 'concepto', 'categoria', 'monto', 'fecha', 'nota', 'ts', 'comprobante'],
   Adeudos: ['id', 'casaId', 'casa', 'periodo'],
 };
 const NUMERICOS = ['monto', 'ts'];
 const CONFIG_BASE = { nombre: 'Fraccionamiento', cuota: 100, saldoInicial: 0, diaInicioCobro: 30, diaLimiteCobro: 3 };
 
 /* ---------- web app ---------- */
-function doGet() {
+function doGet(e) {
   return responder(() => {
+    const p = (e && e.parameter) || {};
+    if (p.foto) return verComprobante(p.foto);
     if (!props().getProperty('ADMIN_USER')) codigoInstalacion();
     return datos(false);
   });
@@ -294,8 +296,31 @@ function aplicar(op) {
       return;
     }
     case 'pago.borrar': return borrarFila('Pagos', op.id);
-    case 'gasto.guardar': return guardarFila('Gastos', op.gasto);
-    case 'gasto.borrar': return borrarFila('Gastos', op.id);
+    case 'gasto.guardar': {
+      // el comprobante solo cambia con foto.guardar / foto.quitar
+      const previo = leer('Gastos').find(x => x.id === op.gasto.id);
+      return guardarFila('Gastos', Object.assign({}, op.gasto, { comprobante: previo ? previo.comprobante : '' }));
+    }
+    case 'gasto.borrar': {
+      const previo = leer('Gastos').find(x => x.id === op.id);
+      if (previo && previo.comprobante) borrarArchivo(previo.comprobante);
+      return borrarFila('Gastos', op.id);
+    }
+    case 'foto.guardar': {
+      const gasto = leer('Gastos').find(x => x.id === op.gastoId);
+      if (!gasto) return;
+      const id = guardarArchivo(op.data, op.mime, op.gastoId);
+      if (gasto.comprobante) borrarArchivo(gasto.comprobante);
+      gasto.comprobante = id;
+      return guardarFila('Gastos', gasto);
+    }
+    case 'foto.quitar': {
+      const gasto = leer('Gastos').find(x => x.id === op.gastoId);
+      if (!gasto || !gasto.comprobante) return;
+      borrarArchivo(gasto.comprobante);
+      gasto.comprobante = '';
+      return guardarFila('Gastos', gasto);
+    }
     case 'casa.guardar': {
       guardarFila('Casas', op.casa);
       if (cacheCasas) cacheCasas[op.casa.id] = op.casa.num;
@@ -321,7 +346,11 @@ function aplicar(op) {
       guardarConfig(d.config);
       reescribir('Casas', d.casas);
       reescribir('Pagos', d.pagos.map(p => Object.assign({}, p, { casa: nums[p.casaId] || '' })));
-      reescribir('Gastos', d.gastos);
+      reescribir('Gastos', d.gastos.map(x => {
+        // fotos capturadas sin conexión a Google llegan como data URL: se pasan a Drive
+        const m = /^data:([^;]+);base64,(.*)$/.exec(x.comprobante || '');
+        return Object.assign({}, x, { comprobante: m ? guardarArchivo(m[2], m[1], x.id) : (x.comprobante || '') });
+      }));
       reescribir('Adeudos', Object.keys(d.adeudos || {}).map(k => {
         const [casaId, periodo] = k.split('|');
         return { id: k, casaId: casaId, casa: nums[casaId] || '', periodo: periodo };
@@ -332,6 +361,40 @@ function aplicar(op) {
     default:
       throw new Error('Operación desconocida: ' + op.tipo);
   }
+}
+
+/* ---------- comprobantes (fotos en Google Drive) ---------- */
+// Los archivos quedan privados en tu Drive; la app los muestra a través de este script.
+function carpetaComprobantes() {
+  const id = props().getProperty('CARPETA_ID');
+  if (id) {
+    try {
+      const f = DriveApp.getFolderById(id);
+      if (!f.isTrashed()) return f;
+    } catch (err) { /* la carpeta ya no existe */ }
+  }
+  const nueva = DriveApp.createFolder('Comprobantes Cuotas Capulac');
+  props().setProperty('CARPETA_ID', nueva.getId());
+  return nueva;
+}
+
+function guardarArchivo(base64, mime, gastoId) {
+  mime = /^image\/(jpeg|png|webp)$/.test(mime || '') ? mime : 'image/jpeg';
+  const ext = mime.split('/')[1].replace('jpeg', 'jpg');
+  const nombre = 'comprobante-' + gastoId + '-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss') + '.' + ext;
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64), mime, nombre);
+  return carpetaComprobantes().createFile(blob).getId();
+}
+
+function borrarArchivo(id) {
+  try { DriveApp.getFileById(id).setTrashed(true); } catch (err) { /* ya no existe */ }
+}
+
+function verComprobante(id) {
+  // solo se entregan archivos ligados a un gasto registrado (no cualquier archivo del Drive)
+  if (!leer('Gastos').some(x => x.comprobante === id)) return { ok: false, error: 'Comprobante no encontrado' };
+  const blob = DriveApp.getFileById(id).getBlob();
+  return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
 /* ---------- menú en la hoja ---------- */
