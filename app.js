@@ -1,13 +1,13 @@
 /* Cuotas de mantenimiento — Fraccionamiento Capulac
    Modos:
    - local:     sin Google Sheets; los datos viven solo en este navegador.
-   - admin:     conectado a Google Sheets con clave; registra y edita.
-   - residente: conectado a Google Sheets sin clave; solo consulta. */
+   - admin:     conectado a Google Sheets con sesión de administrador (usuario y contraseña); controla todo.
+   - invitado:  conectado a Google Sheets sin iniciar sesión; solo consulta. */
 'use strict';
 
 const KEY = 'cuotas-capulac-v1';          // datos del modo local
 const KEY_CACHE = 'cuotas-capulac-cache'; // copia de los datos de Google Sheets
-const CFG_API = 'cuotas-api', CFG_KEY = 'cuotas-admin-key', CFG_COLA = 'cuotas-cola', CFG_MICASA = 'cuotas-mi-casa';
+const CFG_API = 'cuotas-api', CFG_TOKEN = 'cuotas-token', CFG_USER = 'cuotas-usuario', CFG_COLA = 'cuotas-cola', CFG_MICASA = 'cuotas-mi-casa';
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 const MES_C = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const METODOS = ['Efectivo', 'Transferencia', 'Depósito', 'Otro'];
@@ -53,12 +53,14 @@ const qpApi = new URLSearchParams(location.search).get('api');
 if (qpApi && /^(https:\/\/|http:\/\/localhost)/.test(qpApi)) { ls.set(CFG_API, qpApi); history.replaceState(null, '', location.pathname); }
 const remoto = {
   url: ls.get(CFG_API) || (window.CUOTAS_CONFIG && window.CUOTAS_CONFIG.apiUrl) || '',
-  key: ls.get(CFG_KEY) || '',
+  token: ls.get(CFG_TOKEN) || '',
+  usuario: ls.get(CFG_USER) || '',
   cola: (() => { try { return JSON.parse(ls.get(CFG_COLA)) || []; } catch { return []; } })(),
   estado: 'idle', error: '', ultima: null,
 };
-const modo = () => (!remoto.url ? 'local' : remoto.key ? 'admin' : 'residente');
-const puedeEditar = () => modo() !== 'residente';
+const modo = () => (!remoto.url ? 'local' : remoto.token ? 'admin' : 'invitado');
+const puedeEditar = () => modo() !== 'invitado';
+ls.del('cuotas-admin-key'); // clave de la versión anterior
 
 /* ---------- base de datos ---------- */
 function dbInicial() {
@@ -133,7 +135,7 @@ function aplicarLocal(o) {
 }
 // Aplica cambios en pantalla al instante y, si hay Google Sheets, los encola para enviarlos.
 function ejecutar(ops) {
-  if (!puedeEditar()) { toast('Modo consulta: no se pueden hacer cambios'); return false; }
+  if (!puedeEditar()) { toast('Modo invitado: solo puedes consultar'); return false; }
   ops.forEach(aplicarLocal);
   guardar();
   if (modo() === 'admin') {
@@ -163,7 +165,7 @@ async function sincronizar() {
     let res;
     if (modo() === 'admin') {
       const ops = remoto.cola.slice();
-      res = await api(remoto.url, { key: remoto.key, ops });
+      res = await api(remoto.url, { token: remoto.token, ops });
       remoto.cola.splice(0, ops.length);
       ls.set(CFG_COLA, JSON.stringify(remoto.cola));
     } else {
@@ -178,8 +180,8 @@ async function sincronizar() {
     setEstado('ok');
   } catch (e) {
     if (e.auth) {
-      remoto.key = ''; ls.del(CFG_KEY);
-      toast('La clave de administrador ya no es válida. Entraste en modo consulta.');
+      olvidarSesion();
+      toast('Tu sesión de administrador expiró. Ahora estás como invitado.');
       render();
     }
     setEstado('error', e.server ? e.message : 'Sin conexión');
@@ -203,7 +205,7 @@ function setEstado(est, err) {
   else if (remoto.ultima) { txt = `Al día ${pad(remoto.ultima.getHours())}:${pad(remoto.ultima.getMinutes())}`; cls = 'ok'; }
   else { txt = 'Conectando…'; cls = 'sync'; }
   el.className = 'sync-pill ' + cls;
-  el.textContent = (m === 'admin' ? 'Admin · ' : m === 'residente' ? 'Consulta · ' : '') + txt;
+  el.textContent = (m === 'invitado' ? 'Invitado · ' : '') + txt;
   el.title = remoto.error || '';
 }
 
@@ -313,6 +315,7 @@ function render() {
   $('#view').innerHTML = v();
   if (foco) { const i = document.getElementById(foco.id); if (i) { i.focus(); try { i.setSelectionRange(foco.pos, foco.pos); } catch {} } }
   setEstado(remoto.estado, remoto.error);
+  pintarSesion();
 }
 
 /* ---------- vistas ---------- */
@@ -353,7 +356,9 @@ function tarjetaMiCasa() {
 
 function tarjetaCobro(editor) {
   const hoyIso = hoy();
-  const pc = periodoACobrar(hoyIso), v = ventanaCobro(pc);
+  let pc = periodoACobrar(hoyIso);
+  if (hoyIso > ventanaCobro(pc).hasta) pc = moverPeriodo(pc, 1); // ya cerró: mostrar el siguiente cobro
+  const v = ventanaCobro(pc);
   const abierto = hoyIso >= v.desde && hoyIso <= v.hasta;
   const pagadas = db.casas.filter(c => estado(c.id, pc) === 'pagado').length;
   const cobrables = db.casas.filter(c => estado(c.id, pc) !== 'deshabitada').length;
@@ -617,8 +622,10 @@ function vReporte() {
   </section>`;
 }
 
-function enlaceResidentes() {
-  return location.origin + location.pathname + '?api=' + encodeURIComponent(remoto.url);
+function enlaceVecinos() {
+  // si la URL del script ya está en config.js, basta con la dirección de la app
+  const fija = window.CUOTAS_CONFIG && window.CUOTAS_CONFIG.apiUrl;
+  return location.origin + location.pathname + (fija === remoto.url ? '' : '?api=' + encodeURIComponent(remoto.url));
 }
 
 function seccionConexion() {
@@ -626,28 +633,29 @@ function seccionConexion() {
   if (m === 'admin') {
     const esLocalHost = /^(localhost|127\.|\[::1\])/.test(location.hostname) || location.protocol === 'file:';
     return `<section class="card">
-      <h2>Google Sheets</h2>
-      <p class="small"><span class="badge st-pagado">Conectado como administrador</span></p>
-      <p class="muted small">Los cambios se guardan en tu hoja de Google y los residentes los ven al abrir la app.</p>
-      <div class="lbl">Enlace para residentes (solo consulta)</div>
-      <input class="sel-full" readonly value="${esc(enlaceResidentes())}" onclick="this.select()">
-      ${esLocalHost ? '<p class="muted small">⚠ Este enlace solo funcionará cuando la app esté publicada en internet (Netlify o GitHub Pages).</p>' : ''}
+      <h2>Sesión y Google Sheets</h2>
+      <p class="small"><span class="badge st-pagado">Administrador: ${esc(remoto.usuario || 'admin')}</span></p>
+      <p class="muted small">Los cambios se guardan en tu hoja de Google. Los vecinos los ven al abrir el enlace, como invitados (solo consulta).</p>
+      <div class="lbl">Enlace para vecinos</div>
+      <input class="sel-full" readonly value="${esc(enlaceVecinos())}" onclick="this.select()">
+      ${esLocalHost ? '<p class="muted small">⚠ Este enlace solo funcionará cuando la app esté publicada en internet.</p>' : ''}
       <div class="actions">
         <button class="btn btn-primary" data-action="compartirEnlace">Compartir enlace</button>
         <button class="btn btn-ghost" data-action="sincronizar">Actualizar ahora</button>
       </div>
       ${remoto.cola.length ? `<p class="small negc">${remoto.cola.length} cambio(s) sin enviar. <a href="#" data-action="descartarCola">Descartar</a></p>` : ''}
-      <button class="btn btn-ghost full" data-action="salirAdmin">Salir de administrador (este dispositivo queda en modo consulta)</button>
-      <button class="btn btn-ghost full" data-action="desconectar">Desconectar de Google Sheets</button>
+      <button class="btn btn-ghost full" data-action="cerrarSesion">Cerrar sesión de administrador</button>
+      <button class="btn btn-ghost full" data-action="desconectar">Desconectar este dispositivo de Google Sheets</button>
     </section>`;
   }
   return `<section class="card">
-    <h2>Google Sheets</h2>
-    <p class="muted small">Conecta la app a una hoja de Google para que los datos se compartan y los residentes puedan consultar su estado de cuenta.</p>
+    <h2>Conectar con Google Sheets</h2>
+    <p class="muted small">Conecta la app a tu hoja de Google para que los datos se compartan y los vecinos puedan consultarlos con el enlace.</p>
     <form id="formConexion" class="form flush">
       <label>URL del script (termina en /exec)<input name="url" type="url" required placeholder="https://script.google.com/macros/s/…/exec" value="${esc(remoto.url)}"></label>
-      <label>Clave de administrador<input name="key" type="password" required autocomplete="current-password"></label>
-      <button class="btn btn-primary">Conectar como administrador</button>
+      <label>Usuario<input name="usuario" required autocomplete="username" autocapitalize="none"></label>
+      <label>Contraseña<input name="clave" type="password" required autocomplete="current-password"></label>
+      <button class="btn btn-primary">Conectar e iniciar sesión</button>
     </form>
   </section>`;
 }
@@ -662,20 +670,18 @@ function ejemploCobro(di, dl) {
 
 function vAjustes() {
   const m = modo();
-  if (m === 'residente') {
+  if (m === 'invitado') {
     return `
     <section class="card">
-      <h2>Modo consulta</h2>
-      <p class="muted small">Puedes ver el saldo del fraccionamiento, los gastos y el estado de cada casa. Solo el administrador puede registrar pagos y gastos.</p>
+      <h2>Modo invitado</h2>
+      <p class="muted small">Puedes ver el saldo del fraccionamiento, los gastos y el estado de cada casa. Solo el administrador puede registrar, modificar o eliminar información.</p>
       <button class="btn btn-ghost full" data-action="sincronizar">Actualizar datos</button>
       ${ls.get(CFG_MICASA) ? '<button class="btn btn-ghost full" data-action="cambiarMiCasa">Cambiar mi casa</button>' : ''}
     </section>
     <section class="card">
-      <h2>Acceso de administrador</h2>
-      <form id="formAdmin" class="form flush">
-        <label>Clave<input name="key" type="password" required autocomplete="current-password"></label>
-        <button class="btn btn-primary">Entrar</button>
-      </form>
+      <h2>Administrador</h2>
+      <p class="muted small">Si eres el administrador, inicia sesión para registrar pagos, gastos y movimientos.</p>
+      <button class="btn btn-primary full" data-action="login">Iniciar sesión</button>
     </section>
     <p class="muted small center">${esc(db.config.nombre)} · ${db.casas.length} casas</p>`;
   }
@@ -830,7 +836,7 @@ function modalCasa(id) {
     <label>Teléfono<input name="telefono" type="tel" inputmode="tel" value="${esc(c?.telefono)}" autocomplete="off" placeholder="10 dígitos"></label>
     <label>Correo electrónico<input name="correo" type="email" value="${esc(c?.correo)}" autocomplete="off" placeholder="Opcional"></label>
     <label>Notas<input name="notas" value="${esc(c?.notas)}" placeholder="Ej. renta la casa, contacto alterno…"></label>
-    <p class="muted small">Estos datos solo los ve el administrador; los residentes no pueden consultarlos.</p>
+    <p class="muted small">Estos datos solo los ve el administrador; los invitados no pueden consultarlos.</p>
     <div class="modal-actions">
       ${c ? `<button type="button" class="btn btn-danger-soft" data-action="borrarCasa" data-id="${c.id}">Eliminar</button>` : ''}
       <button type="button" class="btn btn-ghost" data-action="cerrar">Cancelar</button>
@@ -1040,25 +1046,68 @@ function descargar(nombre, contenido, tipo) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-/* ---------- conexión: conectar / salir ---------- */
-async function conectarAdmin(url, key) {
-  url = url.trim();
-  if (!/^(https:\/\/script\.google(usercontent)?\.com\/|http:\/\/localhost[:\/])/.test(url)) return toast('La URL debe ser la de tu script de Google (script.google.com/…/exec)');
-  toast('Conectando…');
-  let res;
-  try { res = await api(url, { key, ops: [] }); }
-  catch (e) { return toast(e.server ? e.message : 'No se pudo conectar. Revisa la URL y tu internet.'); }
-  if (!res.data.casas.length) {
-    const local = modo() === 'local' ? db : normalizar(JSON.parse(ls.get(KEY) || 'null') || dbInicial());
-    if (!confirm(`La hoja de Google está vacía.\n¿Subir los datos de este dispositivo (${local.casas.length} casas, ${local.pagos.length} pagos, ${local.gastos.length} gastos)?`)) return;
-    try { res = await api(url, { key, ops: [{ tipo: 'todo.reemplazar', db: local }] }); }
-    catch (e) { return toast(e.message); }
+/* ---------- sesión de administrador ---------- */
+const URL_SCRIPT_OK = /^(https:\/\/script\.google(usercontent)?\.com\/|http:\/\/localhost[:\/])/;
+
+function guardarSesion(url, token, usuario) {
+  remoto.url = url; remoto.token = token; remoto.usuario = usuario; remoto.cola = [];
+  ls.set(CFG_API, url); ls.set(CFG_TOKEN, token); ls.set(CFG_USER, usuario); ls.set(CFG_COLA, '[]');
+}
+function olvidarSesion() {
+  remoto.token = ''; remoto.usuario = ''; remoto.cola = [];
+  ls.del(CFG_TOKEN); ls.del(CFG_USER); ls.set(CFG_COLA, '[]');
+}
+
+async function iniciarSesion(url, usuario, clave) {
+  url = String(url || '').trim();
+  if (!URL_SCRIPT_OK.test(url)) { toast('La URL debe ser la de tu script de Google (script.google.com/…/exec)'); return false; }
+  const btn = document.querySelector('#modal form button.btn-primary, #formConexion button.btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
+  try {
+    let res = await api(url, { accion: 'login', usuario, clave });
+    const token = res.token;
+    if (!res.data.casas.length) {
+      const local = modo() === 'local' ? db : normalizar(JSON.parse(ls.get(KEY) || 'null') || dbInicial());
+      if (confirm(`La hoja de Google está vacía.\n¿Subir los datos de este dispositivo (${local.casas.length} casas, ${local.pagos.length} pagos, ${local.gastos.length} gastos)?`)) {
+        res = await api(url, { token, ops: [{ tipo: 'todo.reemplazar', db: local }] });
+      }
+    }
+    guardarSesion(url, token, res.usuario || usuario);
+    db = normalizar(res.data); guardar();
+    remoto.ultima = new Date(); remoto.estado = 'ok';
+    cerrarModal(); render();
+    toast(`Bienvenido, ${remoto.usuario}. Tienes control total de la aplicación.`);
+    return true;
+  } catch (e) {
+    toast(e.server ? e.message : 'No se pudo conectar. Revisa tu internet.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Iniciar sesión'; }
+    return false;
   }
-  remoto.url = url; remoto.key = key; remoto.cola = [];
-  ls.set(CFG_API, url); ls.set(CFG_KEY, key); ls.set(CFG_COLA, '[]');
-  db = normalizar(res.data); guardar();
-  remoto.ultima = new Date(); remoto.estado = 'ok';
-  render(); toast('Conectado a Google Sheets como administrador');
+}
+
+function modalLogin() {
+  if (!remoto.url) { ir('ajustes'); return toast('Primero conecta la app con tu hoja de Google'); }
+  abrirModal(`
+  <form id="formLogin" class="form">
+    <h3>Iniciar sesión · Administrador</h3>
+    <p class="muted small">Los invitados no necesitan usuario: pueden consultar todo sin iniciar sesión.</p>
+    <label>Usuario<input name="usuario" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></label>
+    <label>Contraseña<input name="clave" type="password" required autocomplete="current-password"></label>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-action="cerrar">Cancelar</button>
+      <button class="btn btn-primary">Iniciar sesión</button>
+    </div>
+  </form>`);
+  $('#formLogin').usuario.focus();
+}
+
+function pintarSesion() {
+  const b = $('#btnSesion');
+  if (!b) return;
+  const m = modo();
+  b.hidden = m === 'local';
+  b.textContent = m === 'admin' ? `👤 ${remoto.usuario || 'Admin'}` : 'Iniciar sesión';
+  b.dataset.action = m === 'admin' ? 'menuSesion' : 'login';
 }
 
 /* ---------- eventos ---------- */
@@ -1128,8 +1177,8 @@ const acciones = {
     db = dbInicial(); guardar(); ir('inicio'); toast('Datos reiniciados');
   },
   compartirEnlace: async () => {
-    const url = enlaceResidentes();
-    const texto = `Consulta el estado de las cuotas de mantenimiento de ${db.config.nombre}:`;
+    const url = enlaceVecinos();
+    const texto = `Consulta el estado de las cuotas de mantenimiento de ${db.config.nombre} (solo consulta, no necesitas usuario):`;
     if (navigator.share) { try { await navigator.share({ title: db.config.nombre, text: texto, url }); return; } catch (e) { if (e.name === 'AbortError') return; } }
     try { await navigator.clipboard.writeText(url); toast('Enlace copiado'); } catch { prompt('Copia este enlace:', url); }
   },
@@ -1137,15 +1186,28 @@ const acciones = {
     if (!confirm(`¿Descartar ${remoto.cola.length} cambio(s) que no se han enviado a Google Sheets?`)) return;
     remoto.cola = []; ls.set(CFG_COLA, '[]'); sincronizar(); toast('Cambios descartados');
   },
-  salirAdmin: () => {
-    if (remoto.cola.length && !confirm('Hay cambios sin enviar que se perderán. ¿Salir de todos modos?')) return;
-    remoto.key = ''; remoto.cola = []; ls.del(CFG_KEY); ls.set(CFG_COLA, '[]');
-    ir('inicio'); sincronizar(); toast('Ahora estás en modo consulta');
+  login: () => modalLogin(),
+  menuSesion: () => abrirModal(`<div class="form">
+    <h3>Sesión de administrador</h3>
+    <p>Conectado como <b>${esc(remoto.usuario)}</b>. Tienes control total: registrar, modificar y eliminar.</p>
+    <div class="stack">
+      <button class="btn btn-ghost" data-action="irAjustes">Ajustes y enlace para vecinos</button>
+      <button class="btn btn-danger-soft" data-action="cerrarSesion">Cerrar sesión</button>
+      <button class="btn btn-ghost" data-action="cerrar">Volver</button>
+    </div></div>`),
+  irAjustes: () => { cerrarModal(); ir('ajustes'); },
+  cerrarSesion: () => {
+    if (remoto.cola.length && !confirm('Hay cambios sin enviar a Google que se perderán. ¿Cerrar sesión de todos modos?')) return;
+    const token = remoto.token;
+    if (token) api(remoto.url, { accion: 'logout', token }).catch(() => {});
+    olvidarSesion(); cerrarModal();
+    ir('inicio'); sincronizar(); toast('Sesión cerrada. Ahora estás como invitado.');
   },
   desconectar: () => {
     if (!confirm('Este dispositivo dejará de usar Google Sheets y volverá a sus datos locales. Los datos en Google no se borran. ¿Continuar?')) return;
-    remoto.url = ''; remoto.key = ''; remoto.cola = [];
-    [CFG_API, CFG_KEY, KEY_CACHE].forEach(ls.del); ls.set(CFG_COLA, '[]');
+    if (remoto.token) api(remoto.url, { accion: 'logout', token: remoto.token }).catch(() => {});
+    olvidarSesion(); remoto.url = '';
+    [CFG_API, KEY_CACHE].forEach(ls.del);
     db = cargarDb(); reindex(); ir('inicio'); toast('Desconectado');
   },
 };
@@ -1194,8 +1256,8 @@ document.addEventListener('submit', e => {
       diaInicioCobro: parseInt(f.diaInicioCobro.value), diaLimiteCobro: parseInt(f.diaLimiteCobro.value) };
     if (ejecutar([{ tipo: 'config.guardar', config }])) { render(); toast('Configuración guardada'); }
   }
-  if (f.id === 'formConexion') { e.preventDefault(); conectarAdmin(f.url.value, f.key.value); }
-  if (f.id === 'formAdmin') { e.preventDefault(); conectarAdmin(remoto.url, f.key.value); }
+  if (f.id === 'formConexion') { e.preventDefault(); iniciarSesion(f.url.value, f.usuario.value, f.clave.value); }
+  if (f.id === 'formLogin') { e.preventDefault(); iniciarSesion(remoto.url, f.usuario.value, f.clave.value); }
 });
 
 /* ---------- actualización automática ---------- */

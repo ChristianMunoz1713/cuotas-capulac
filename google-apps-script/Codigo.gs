@@ -5,13 +5,14 @@
  *  1. Crea una hoja de cálculo nueva en Google Drive (ej. "Cuotas Capulac").
  *  2. Menú Extensiones → Apps Script. Borra lo que haya y pega TODO este archivo. Guarda.
  *  3. Recarga la hoja de cálculo: aparecerá el menú "Cuotas". Usa
- *     Cuotas → "Establecer clave de administrador" (pedirá permisos la primera vez).
+ *     Cuotas → "Establecer usuario y contraseña del administrador" (pedirá permisos la primera vez).
  *  4. En Apps Script: Implementar → Nueva implementación → tipo "Aplicación web".
  *       Ejecutar como: Yo    ·    Quién tiene acceso: Cualquier persona
  *     Copia la URL que termina en /exec y pégala en la app (Ajustes → Google Sheets).
  *
- * Los residentes solo pueden LEER datos públicos (sin nombres ni teléfonos).
- * Para escribir se requiere la clave de administrador.
+ * Invitados (sin usuario): solo LEEN datos públicos (sin nombres ni teléfonos).
+ * Administrador: inicia sesión con usuario y contraseña y recibe un token de sesión.
+ * La contraseña se guarda cifrada (SHA-256 con sal) en las propiedades del script, nunca en el código.
  */
 
 const ESQUEMA = {
@@ -32,9 +33,10 @@ function doGet() {
 function doPost(e) {
   return responder(() => {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    if (!esAdmin(body.key)) {
-      Utilities.sleep(1200); // frena intentos de adivinar la clave
-      return { ok: false, auth: true, error: 'Clave de administrador incorrecta' };
+    if (body.accion === 'login') return iniciarSesion(body.usuario, body.clave);
+    if (body.accion === 'logout') { cerrarSesion(body.token); return { ok: true }; }
+    if (!sesionValida(body.token)) {
+      return { ok: false, auth: true, error: 'Tu sesión de administrador expiró. Vuelve a iniciar sesión.' };
     }
     const lock = LockService.getScriptLock();
     lock.waitLock(25000);
@@ -54,9 +56,57 @@ function responder(fn) {
   return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function esAdmin(key) {
-  const real = PropertiesService.getScriptProperties().getProperty('ADMIN_KEY');
-  return !!real && typeof key === 'string' && key === real;
+/* ---------- usuarios y sesiones ---------- */
+const DIAS_SESION = 180;
+const props = () => PropertiesService.getScriptProperties();
+
+function hashClave(clave, sal) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, sal + '|' + clave, Utilities.Charset.UTF_8);
+  return Utilities.base64Encode(bytes);
+}
+
+function iniciarSesion(usuario, clave) {
+  usuario = String(usuario || '').trim().toLowerCase();
+  clave = String(clave || '');
+  const p = props();
+  const real = p.getProperty('ADMIN_USER');
+  if (!real) return { ok: false, error: 'Aún no hay administrador. En la hoja usa Cuotas → Establecer usuario y contraseña.' };
+  // bloqueo temporal tras varios intentos fallidos
+  const cache = CacheService.getScriptCache();
+  const fallos = Number(cache.get('fallos') || 0);
+  if (fallos >= 5) return { ok: false, error: 'Demasiados intentos fallidos. Espera 15 minutos.' };
+  if (usuario !== real || hashClave(clave, p.getProperty('ADMIN_SAL')) !== p.getProperty('ADMIN_HASH')) {
+    cache.put('fallos', String(fallos + 1), 900);
+    Utilities.sleep(1200);
+    return { ok: false, error: 'Usuario o contraseña incorrectos' };
+  }
+  cache.remove('fallos');
+  const token = Utilities.getUuid() + Utilities.getUuid();
+  const ses = leerSesiones();
+  ses[token] = Date.now() + DIAS_SESION * 86400000;
+  p.setProperty('SESIONES', JSON.stringify(ses));
+  const out = datos(true);
+  out.token = token;
+  out.usuario = real;
+  return out;
+}
+
+function leerSesiones() {
+  let ses = {};
+  try { ses = JSON.parse(props().getProperty('SESIONES') || '{}'); } catch (err) {}
+  const ahora = Date.now();
+  Object.keys(ses).forEach(t => { if (ses[t] < ahora) delete ses[t]; });
+  return ses;
+}
+
+function sesionValida(token) {
+  return typeof token === 'string' && token.length > 30 && !!leerSesiones()[token];
+}
+
+function cerrarSesion(token) {
+  const ses = leerSesiones();
+  delete ses[token];
+  props().setProperty('SESIONES', JSON.stringify(ses));
 }
 
 /* ---------- lectura ---------- */
@@ -250,22 +300,33 @@ function aplicar(op) {
 /* ---------- menú en la hoja ---------- */
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Cuotas')
-    .addItem('Establecer clave de administrador', 'establecerClave')
+    .addItem('Establecer usuario y contraseña del administrador', 'establecerAdministrador')
+    .addItem('Cerrar todas las sesiones de administrador', 'cerrarTodasLasSesiones')
     .addItem('Preparar hojas', 'prepararHojas')
     .addToUi();
 }
 
-function establecerClave() {
+function establecerAdministrador() {
   const ui = SpreadsheetApp.getUi();
-  const r = ui.prompt('Clave de administrador',
-    'Escribe una clave de al menos 8 caracteres. Se usará en la app para registrar pagos y gastos.',
-    ui.ButtonSet.OK_CANCEL);
-  if (r.getSelectedButton() !== ui.Button.OK) return;
-  const k = r.getResponseText().trim();
-  if (k.length < 8) return ui.alert('La clave debe tener al menos 8 caracteres.');
-  PropertiesService.getScriptProperties().setProperty('ADMIN_KEY', k);
+  const ru = ui.prompt('Administrador (1 de 2)', 'Escribe el nombre de usuario del administrador:', ui.ButtonSet.OK_CANCEL);
+  if (ru.getSelectedButton() !== ui.Button.OK) return;
+  const usuario = ru.getResponseText().trim().toLowerCase();
+  if (usuario.length < 3) return ui.alert('El usuario debe tener al menos 3 caracteres.');
+  const rc = ui.prompt('Administrador (2 de 2)', 'Escribe la contraseña (mínimo 8 caracteres):', ui.ButtonSet.OK_CANCEL);
+  if (rc.getSelectedButton() !== ui.Button.OK) return;
+  const clave = rc.getResponseText();
+  if (clave.length < 8) return ui.alert('La contraseña debe tener al menos 8 caracteres.');
+  const sal = Utilities.getUuid();
+  props().setProperties({ ADMIN_USER: usuario, ADMIN_SAL: sal, ADMIN_HASH: hashClave(clave, sal), SESIONES: '{}' });
+  props().deleteProperty('ADMIN_KEY');
   prepararHojas();
-  ui.alert('Clave guardada. Ahora implementa el script como "Aplicación web" (ver instrucciones al inicio del código).');
+  ui.alert('Administrador "' + usuario + '" guardado. Las sesiones anteriores se cerraron.\n\n' +
+    'Si aún no lo has hecho, implementa el script como "Aplicación web" (ver instrucciones al inicio del código).');
+}
+
+function cerrarTodasLasSesiones() {
+  props().setProperty('SESIONES', '{}');
+  SpreadsheetApp.getUi().alert('Se cerraron todas las sesiones. El administrador deberá volver a iniciar sesión en la app.');
 }
 
 function prepararHojas() {

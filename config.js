@@ -1,6 +1,6 @@
-// Pega aquí la URL de tu script de Google (termina en /exec) para que TODOS los que abran
-// la app se conecten automáticamente a la hoja de Google en modo consulta.
-// Si lo dejas vacío, los residentes pueden entrar con el "Enlace para residentes" que da la app.
+// URL de tu script de Google (termina en /exec). Con ella, TODOS los que abran la app
+// entran directamente como invitados (solo consulta) a los datos de tu hoja de Google.
+// El administrador inicia sesión desde el botón "Iniciar sesión".
 window.CUOTAS_CONFIG = {
   apiUrl: '',
 };

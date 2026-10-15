@@ -1,49 +1,53 @@
-# Cuotas Capulac — Puesta en marcha
+# Cuotas Capulac: puesta en marcha
 
-## 1. Crear la hoja de Google (una sola vez, ~10 min)
+La app tiene dos tipos de usuario:
 
-1. En Google Drive crea una **Hoja de cálculo** nueva, por ejemplo "Cuotas Capulac".
-2. Menú **Extensiones → Apps Script**. Borra el código que aparece y pega **todo** el contenido de
-   `google-apps-script/Codigo.gs`. Guarda (ícono de disquete).
+| | Administrador | Invitado (vecinos) |
+|---|---|---|
+| Acceso | Usuario y contraseña | Solo abrir el enlace, sin usuario |
+| Registrar pagos, gastos, adeudos y propietarios | ✓ | ✗ |
+| Modificar y eliminar | ✓ | ✗ |
+| Ver saldo, gastos y estado de cada casa | ✓ | ✓ |
+| Ver nombres, teléfonos y notas | ✓ | ✗ |
+
+El usuario y la contraseña se verifican en **tu** hoja de Google. La contraseña se guarda cifrada y no aparece en el código de la app.
+
+## 1. Crear la hoja de Google (una sola vez, ~10 min, desde una computadora)
+
+1. En Google Drive crea una **hoja de cálculo** nueva, por ejemplo "Cuotas Capulac".
+2. Ve al menú **Extensiones → Apps Script**. Borra el código que aparece y pega **todo** el contenido de
+   `google-apps-script/Codigo.gs`. Guarda con el ícono de disquete.
 3. Regresa a la hoja y **recárgala**. Aparece el menú **Cuotas**.
-   Elige **Cuotas → Establecer clave de administrador** y escribe una clave de al menos 8 caracteres.
+   Elige **Cuotas → Establecer usuario y contraseña del administrador** y escribe el usuario y luego la contraseña.
    La primera vez Google pide permisos: *Revisar permisos → tu cuenta → Configuración avanzada → Ir a (proyecto) → Permitir*.
-4. En Apps Script: **Implementar → Nueva implementación**, tipo **Aplicación web**:
+4. En Apps Script ve a **Implementar → Nueva implementación** y elige el tipo **Aplicación web**:
    - Ejecutar como: **Yo**
    - Quién tiene acceso: **Cualquier persona**
-   
+
    Pulsa **Implementar** y copia la URL que termina en `/exec`.
 
-> Si después cambias el código del script, usa **Implementar → Gestionar implementaciones → Editar → Versión nueva**
-> para que la URL siga siendo la misma.
+> Si después cambias el código del script, ve a **Implementar → Gestionar implementaciones → Editar → Versión nueva**.
+> Así la URL sigue siendo la misma.
 
-## 2. Publicar la app en internet (gratis)
+## 2. Conectar la app como administrador
 
-La app debe estar en una dirección `https` para instalarse en los celulares.
+En la app ve a **Ajustes → Conectar con Google Sheets**. Pega la URL `/exec`, escribe tu usuario y contraseña, y pulsa **Conectar e iniciar sesión**.
+Si la hoja está vacía, la app ofrece subir los datos que ya tienes en ese dispositivo.
 
-- **Netlify (más fácil):** entra a https://app.netlify.com/drop y arrastra la carpeta `Cuotas Mantenimiento`.
-  Te da una dirección tipo `https://nombre.netlify.app`.
-- **GitHub Pages:** sube la carpeta a un repositorio y activa *Settings → Pages*.
+En otros dispositivos del administrador, solo abre la app y pulsa **Iniciar sesión** (arriba a la derecha).
 
-Opcional: antes de subirla, pega la URL `/exec` en `config.js` (`apiUrl: '...'`).
-Así cualquiera que abra la dirección ya entra conectado en modo consulta.
+## 3. Dejar la URL fija para los vecinos
 
-## 3. Conectar al administrador
+Pega la URL `/exec` en `config.js` (`apiUrl: '...'`) y vuelve a publicar la app.
+Desde ese momento, cualquiera que abra el enlace entra directamente como **invitado**, con los datos de tu hoja de Google.
 
-En la app: **Ajustes → Google Sheets** → pega la URL `/exec` y la clave → **Conectar como administrador**.
-Si la hoja está vacía, la app ofrece subir los datos que ya tienes en ese dispositivo (las 62 casas y lo que hayas registrado).
+## 4. Compartir con los vecinos
 
-## 4. Compartir con los residentes
+En **Ajustes → Compartir enlace** (por WhatsApp, por ejemplo). Los vecinos pueden instalarla: Chrome → menú ⋮ → **Instalar app**.
 
-En **Ajustes → Enlace para residentes → Compartir enlace** (por WhatsApp, por ejemplo).
-Los residentes abren el enlace en Chrome → menú ⋮ → **Instalar app**.
+## Seguridad
 
-Lo que ven los residentes: el saldo, los gastos, el estado de cada casa por mes y la opción de elegir "Mi casa".
-Lo que **no** ven: nombres, teléfonos ni notas de los pagos. No pueden registrar, editar ni borrar nada.
-
-## Notas
-
-- Los datos viven en la hoja de Google (pestañas Config, Casas, Pagos, Gastos, Adeudos). No edites las columnas `id`/`casaId` a mano.
-- Si el administrador se queda sin internet, los cambios se guardan en el teléfono y se envían solos al volver la conexión.
-- Puede haber más de un administrador: comparte la clave solo con quien deba registrar pagos. Para cambiarla, usa de nuevo
-  *Cuotas → Establecer clave de administrador*; quien tenga la clave anterior pasará a modo consulta.
+- Las sesiones del administrador duran 180 días. Para cerrarlas todas (por ejemplo, si pierdes el teléfono), en la hoja usa **Cuotas → Cerrar todas las sesiones de administrador**.
+- Para cambiar el usuario o la contraseña, usa de nuevo **Cuotas → Establecer usuario y contraseña del administrador**.
+- Después de 5 intentos fallidos, el inicio de sesión se bloquea 15 minutos.
+- No edites a mano las columnas `id`/`casaId` de la hoja.
