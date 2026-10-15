@@ -168,6 +168,15 @@ body.sin-sesion .bottomnav, body.sin-sesion #estadoSync { display: none; }
 .chip-deshabitada.on { background: var(--desh); border-color: var(--desh); }
 .casa-head .badge { margin-top: 4px; }
 .nota-desh { margin: -6px 4px 0; }
+.foto-box { border: 1px dashed var(--line); border-radius: 10px; padding: 8px; min-height: 44px; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.foto-box img { max-width: 100%; max-height: 220px; border-radius: 8px; display: block; }
+.foto-acciones { margin-top: 8px; }
+.foto-acciones .btn { flex: 1; font-weight: 600; }
+.comp-btn { opacity: 1; font-size: 18px; }
+.comp-vista { min-height: 120px; display: flex; align-items: center; justify-content: center; background: var(--bg); border-radius: 10px; overflow: auto; max-height: 65vh; }
+.comp-vista img { max-width: 100%; max-height: 65vh; border-radius: 8px; cursor: zoom-in; display: block; }
+.comp-vista.zoom { align-items: flex-start; justify-content: flex-start; }
+.comp-vista.zoom img { max-width: none; max-height: none; width: 200%; cursor: zoom-out; }
 .cobro { border-left: 5px solid var(--line); }
 .cobro.abierto { border-left-color: var(--ok); }
 .cobro-fechas { margin: 0; font-size: 16px; }

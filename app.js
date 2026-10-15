@@ -108,7 +108,7 @@ function normalizar(d) {
     config: cfg,
     casas: (d.casas || []).map(c => ({ id: String(c.id), num: String(c.num), propietario: c.propietario || '', telefono: String(c.telefono || ''), correo: c.correo || '', notas: c.notas || '', desocupada: c.desocupada || '' })),
     pagos: (d.pagos || []).map(p => ({ ...p, monto: num(p.monto), ts: +p.ts || 0, metodo: p.metodo || '', nota: p.nota || '' })),
-    gastos: (d.gastos || []).map(g => ({ ...g, monto: num(g.monto), ts: +g.ts || 0, categoria: g.categoria || '', nota: g.nota || '' })),
+    gastos: (d.gastos || []).map(g => ({ ...g, monto: num(g.monto), ts: +g.ts || 0, categoria: g.categoria || '', nota: g.nota || '', comprobante: g.comprobante || '' })),
     adeudos: d.adeudos || {},
   };
 }
@@ -145,7 +145,13 @@ function aplicarLocal(o) {
   switch (o.tipo) {
     case 'pago.guardar': upsert(db.pagos, o.pago); delete db.adeudos[o.pago.casaId + '|' + o.pago.periodo]; break;
     case 'pago.borrar': db.pagos = db.pagos.filter(p => p.id !== o.id); break;
-    case 'gasto.guardar': upsert(db.gastos, o.gasto); break;
+    case 'gasto.guardar': {
+      const previo = db.gastos.find(g => g.id === o.gasto.id);
+      upsert(db.gastos, { ...o.gasto, comprobante: previo ? previo.comprobante : '' });
+      break;
+    }
+    case 'foto.guardar': { const g = db.gastos.find(x => x.id === o.gastoId); if (g) g.comprobante = `data:${o.mime};base64,${o.data}`; break; }
+    case 'foto.quitar': { const g = db.gastos.find(x => x.id === o.gastoId); if (g) g.comprobante = ''; break; }
     case 'gasto.borrar': db.gastos = db.gastos.filter(g => g.id !== o.id); break;
     case 'casa.guardar': upsert(db.casas, o.casa); break;
     case 'casa.borrar':
@@ -622,6 +628,7 @@ function vGastos() {
         <span class="dot bad"></span>
         <div class="grow"><div>${esc(g.concepto)}</div><div class="muted small">${fechaTxt(g.fecha)}${g.categoria ? ' · ' + esc(g.categoria) : ''}${g.nota ? ' · ' + esc(g.nota) : ''}</div></div>
         <b class="negc">${money(g.monto)}</b>
+        ${g.comprobante ? `<button class="icon-btn comp-btn" data-action="verComprobante" data-id="${g.id}" title="Ver comprobante" aria-label="Ver comprobante">🧾</button>` : ''}
         ${editor ? `<button class="icon-btn" data-action="editarGasto" data-id="${g.id}" title="Editar" aria-label="Editar gasto">✎</button>` : ''}
       </li>`).join('')}</ul>
     </section>`).join('') || '<p class="empty">No hay gastos registrados.</p>'}`;
@@ -854,6 +861,57 @@ function modalPago(casaId, preselPer) {
   });
 }
 
+/* ---------- comprobantes ---------- */
+// Reduce la foto (máx. 1400 px, JPEG) para que suba y cargue rápido
+async function comprimirImagen(archivo, max = 1400, calidad = 0.72) {
+  const bmp = await createImageBitmap(archivo);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', calidad);
+}
+
+const fotosCache = new Map();
+// Devuelve una URL mostrable: data URL local o la foto pedida al script (Drive)
+async function srcComprobante(ref) {
+  if (!ref) throw new Error('sin foto');
+  if (ref.startsWith('data:')) return ref;
+  if (fotosCache.has(ref)) return fotosCache.get(ref);
+  if (!remoto.url) throw new Error('sin conexión');
+  const r = await fetch(remoto.url + (remoto.url.includes('?') ? '&' : '?') + 'foto=' + encodeURIComponent(ref));
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || 'No disponible');
+  const src = `data:${j.mime};base64,${j.data}`;
+  fotosCache.set(ref, src);
+  return src;
+}
+
+async function modalComprobante(gastoId) {
+  const g = db.gastos.find(x => x.id === gastoId);
+  if (!g || !g.comprobante) return;
+  abrirModal(`<div class="form">
+    <h3>Comprobante</h3>
+    <p class="muted small">${esc(g.concepto)} · ${fechaTxt(g.fecha)} · <b>${money(g.monto)}</b></p>
+    <div id="compVista" class="comp-vista"><span class="muted">Cargando comprobante…</span></div>
+    <p class="muted small">Toca la imagen para ampliarla.</p>
+    <div class="modal-actions"><button class="btn btn-ghost" data-action="cerrar">Cerrar</button></div>
+  </div>`);
+  try {
+    const src = await srcComprobante(g.comprobante);
+    const v = $('#compVista');
+    if (v) {
+      v.innerHTML = `<img src="${src}" alt="Comprobante de ${esc(g.concepto)}">`;
+      v.firstChild.addEventListener('click', () => v.classList.toggle('zoom'));
+    }
+  } catch (e) {
+    const v = $('#compVista');
+    if (v) v.innerHTML = `<span class="negc">No se pudo cargar el comprobante${navigator.onLine ? '' : ' (sin internet)'}.</span>`;
+  }
+}
+
 function modalGasto(id) {
   const g = id ? db.gastos.find(x => x.id === id) : null;
   abrirModal(`
@@ -865,6 +923,14 @@ function modalGasto(id) {
     <label>Monto<input name="monto" type="number" step="0.01" min="0.01" required value="${g?.monto ?? ''}"></label>
     <label>Fecha<input name="fecha" type="date" required value="${g?.fecha ?? hoy()}"></label>
     <label>Nota (opcional)<input name="nota" value="${esc(g?.nota)}" placeholder="Proveedor, factura…"></label>
+    <div>
+      <div class="lbl">Comprobante (foto)</div>
+      <div id="fotoGasto" class="foto-box"></div>
+      <div class="actions foto-acciones">
+        <label class="btn btn-ghost file-btn">📷 Tomar o elegir foto<input type="file" name="foto" accept="image/*" hidden></label>
+        <button type="button" class="btn btn-ghost" id="quitarFoto" hidden>Quitar foto</button>
+      </div>
+    </div>
     ${!g ? `<p class="muted small">Saldo disponible: ${money(saldo())}</p>` : ''}
     <div class="modal-actions">
       ${g ? `<button type="button" class="btn btn-danger-soft" data-action="borrarGasto" data-id="${g.id}">Eliminar</button>` : ''}
@@ -872,13 +938,41 @@ function modalGasto(id) {
       <button class="btn btn-primary">Guardar</button>
     </div>
   </form>`);
-  $('#formGasto').addEventListener('submit', e => {
+  // foto: null = sin cambios, '' = quitar, data URL = nueva
+  let foto = null;
+  const pintarFoto = async () => {
+    const caja = $('#fotoGasto');
+    const actual = foto !== null ? foto : g?.comprobante || '';
+    $('#quitarFoto').hidden = !actual;
+    if (!actual) { caja.innerHTML = '<span class="muted small">Sin comprobante</span>'; return; }
+    caja.innerHTML = '<span class="muted small">Cargando foto…</span>';
+    try { caja.innerHTML = `<img src="${await srcComprobante(actual)}" alt="Comprobante">`; }
+    catch { caja.innerHTML = '<span class="negc small">No se pudo cargar la foto</span>'; }
+  };
+  const fForm = $('#formGasto');
+  fForm.foto.addEventListener('change', async () => {
+    const archivo = fForm.foto.files[0];
+    if (!archivo) return;
+    $('#fotoGasto').innerHTML = '<span class="muted small">Preparando foto…</span>';
+    try { foto = await comprimirImagen(archivo); } catch { toast('No se pudo leer la imagen'); }
+    fForm.foto.value = '';
+    pintarFoto();
+  });
+  $('#quitarFoto').addEventListener('click', () => { foto = ''; pintarFoto(); });
+  pintarFoto();
+  fForm.addEventListener('submit', e => {
     e.preventDefault();
     const f = e.target;
     const data = { concepto: f.concepto.value.trim(), categoria: f.categoria.value.trim(), monto: num(f.monto.value), fecha: f.fecha.value, nota: f.nota.value.trim() };
     if (!data.concepto || data.monto <= 0) return toast('Revisa concepto y monto');
     const gasto = g ? { ...g, ...data } : { id: uid(), ts: Date.now(), ...data };
-    if (!ejecutar([{ tipo: 'gasto.guardar', gasto }])) return;
+    delete gasto.comprobante;
+    const ops = [{ tipo: 'gasto.guardar', gasto }];
+    if (foto) {
+      const [, mime, b64] = /^data:([^;]+);base64,(.*)$/.exec(foto);
+      ops.push({ tipo: 'foto.guardar', gastoId: gasto.id, mime, data: b64 });
+    } else if (foto === '' && g?.comprobante) ops.push({ tipo: 'foto.quitar', gastoId: gasto.id });
+    if (!ejecutar(ops)) return;
     cerrarModal(); render();
     toast(g ? 'Gasto actualizado' : `Gasto registrado: ${money(data.monto)}`);
   });
@@ -1035,9 +1129,10 @@ function exportarExcel() {
 
   const gastos = [...db.gastos].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts);
   const hojaGastos = {
-    name: 'Gastos', freezeRow: 1, cols: [12, 44, 18, 13, 30],
-    rows: [['Fecha', 'Concepto', 'Categoría', 'Monto', 'Nota'].map(H),
-      ...gastos.map(g => [D(g.fecha), g.concepto, g.categoria || '', M(g.monto), g.nota || ''])],
+    name: 'Gastos', freezeRow: 1, cols: [12, 44, 18, 13, 30, 60],
+    rows: [['Fecha', 'Concepto', 'Categoría', 'Monto', 'Nota', 'Comprobante'].map(H),
+      ...gastos.map(g => [D(g.fecha), g.concepto, g.categoria || '', M(g.monto), g.nota || '',
+        !g.comprobante ? '' : g.comprobante.startsWith('data:') ? 'Sí (pendiente de subir)' : `https://drive.google.com/file/d/${g.comprobante}/view`])],
   };
 
   // Hojas de estado por año
@@ -1214,6 +1309,7 @@ const acciones = {
   nuevoPago: el => modalPago(el.dataset.casa),
   nuevoGasto: () => modalGasto(),
   editarGasto: el => modalGasto(el.dataset.id),
+  verComprobante: el => modalComprobante(el.dataset.id),
   nuevaCasa: () => modalCasa(),
   editarCasa: el => modalCasa(el.dataset.id),
   ocupacion: el => modalOcupacion(el.dataset.id),
